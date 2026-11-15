@@ -267,7 +267,27 @@ Run persistence tests:
 python -m pytest tests/persistence -v
 ```
 
-The current test suite contains 33 passing tests across unit, API integration, and persistence test categories.
+The test suite covers unit, API integration, and persistence behavior.
+
+Run the deterministic test entry point locally from a POSIX shell (such as
+Git Bash, WSL, or a Linux shell):
+
+```sh
+sh tests/test.sh
+```
+
+The test dependencies are pinned in `requirements-test.lock` with hashes. Build
+and run the same suite in the Python 3.11 container:
+
+```sh
+docker build -t ai-evaluation-reliability-tests .
+docker run --rm --network none ai-evaluation-reliability-tests
+```
+
+The image build fetches the pinned base image and test dependencies. The test
+container runs without network access and uses isolated SQLite test databases.
+Update `requirements-test.lock` when the runtime or development dependencies in
+`pyproject.toml` change.
 
 ## Database Migrations
 

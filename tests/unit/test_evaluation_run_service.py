@@ -3,11 +3,12 @@ import pytest
 
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base
+from app.models import EvaluationRun
 from app.services.evaluation_run_service import EvaluationRunService
 
 
@@ -35,6 +36,48 @@ def db_session():
         db.close()
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def arrange_competing_completion(
+    service,
+    db_session,
+    monkeypatch,
+    winning_result,
+    winning_completed_at,
+):
+    finalize_if_running = service.repository.finalize_if_running
+
+    def finalize_after_competing_update(run_id, result, completed_at):
+        statement = (
+            update(EvaluationRun)
+            .where(
+                EvaluationRun.id == run_id,
+                EvaluationRun.status == "running",
+            )
+            .values(
+                status="completed",
+                result=winning_result,
+                error_message=None,
+                completed_at=winning_completed_at,
+                updated_at=winning_completed_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        execution_result = db_session.execute(statement)
+        assert execution_result.rowcount == 1
+        db_session.commit()
+
+        return finalize_if_running(
+            run_id=run_id,
+            result=result,
+            completed_at=completed_at,
+        )
+
+    monkeypatch.setattr(
+        service.repository,
+        "finalize_if_running",
+        finalize_after_competing_update,
+    )
 
 
 def test_create_evaluation_run(db_session):
@@ -168,6 +211,82 @@ def test_repeated_completion_with_different_result_is_rejected(db_session):
         match="already completed with a different result",
     ):
         service.complete_run(run.id, {"score": 0.98})
+
+
+def test_completion_accepts_equivalent_competing_result(
+    db_session,
+    monkeypatch,
+):
+    service = EvaluationRunService(db_session)
+    run = service.create_run()
+    service.start_run(run.id)
+
+    winning_result = {
+        "metrics": {"accuracy": 1, "consistency": 0.93},
+        "passed": True,
+    }
+    requested_result = {
+        "passed": True,
+        "metrics": {"consistency": 0.93, "accuracy": 1.0},
+    }
+    winning_completed_at = datetime(2025, 1, 2, 3, 4, 5)
+    arrange_competing_completion(
+        service,
+        db_session,
+        monkeypatch,
+        winning_result,
+        winning_completed_at,
+    )
+
+    completed_run = service.complete_run(run.id, requested_result)
+
+    assert completed_run.status == "completed"
+    assert completed_run.result == winning_result
+    assert type(completed_run.result["metrics"]["accuracy"]) is int
+    assert completed_run.completed_at == winning_completed_at
+    assert completed_run.updated_at == winning_completed_at
+
+    db_session.expire_all()
+    persisted_run = service.get_run(run.id)
+    assert persisted_run is not None
+    assert persisted_run.result == winning_result
+    assert type(persisted_run.result["metrics"]["accuracy"]) is int
+    assert persisted_run.completed_at == winning_completed_at
+    assert persisted_run.updated_at == winning_completed_at
+
+
+def test_completion_rejects_conflicting_competing_result(
+    db_session,
+    monkeypatch,
+):
+    service = EvaluationRunService(db_session)
+    run = service.create_run()
+    service.start_run(run.id)
+
+    winning_result = {"score": 0.95, "passed": True}
+    requested_result = {"score": 0.98, "passed": True}
+    winning_completed_at = datetime(2025, 1, 2, 3, 4, 5)
+    arrange_competing_completion(
+        service,
+        db_session,
+        monkeypatch,
+        winning_result,
+        winning_completed_at,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="already completed with a different result",
+    ):
+        service.complete_run(run.id, requested_result)
+
+    db_session.expire_all()
+    persisted_run = service.get_run(run.id)
+    assert persisted_run is not None
+    assert persisted_run.status == "completed"
+    assert persisted_run.result == winning_result
+    assert persisted_run.completed_at == winning_completed_at
+    assert persisted_run.updated_at == winning_completed_at
 
 
 def test_cannot_fail_completed_run(db_session):
