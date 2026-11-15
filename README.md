@@ -104,6 +104,34 @@ Apply database migrations:
 python -m alembic upgrade head
 ```
 
+This creates the schema on a new database and applies any pending revisions.
+The optional initializer uses the same Alembic migration path and is safe to
+run again:
+
+```powershell
+python -m app.init_database
+```
+
+For an existing unversioned database, back it up and verify that the
+`evaluation_runs` table has the original columns (`id`, `status`, `created_at`,
+and `updated_at`) and the `ix_evaluation_runs_status` index before recording
+the baseline revision and upgrading:
+
+```powershell
+python -m alembic stamp a4c98d5f2e71
+python -m alembic upgrade head
+```
+
+If an unversioned database already has the result fields, verify that it
+matches the current schema before stamping it at `be4c5f4e3330`:
+
+```powershell
+python -m alembic stamp be4c5f4e3330
+```
+
+Databases already stamped at `be4c5f4e3330` can be upgraded normally; the
+existing revision ID is retained.
+
 Check the current migration revision:
 
 ```powershell
