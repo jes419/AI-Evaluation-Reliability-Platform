@@ -6,6 +6,8 @@ A Python-based platform for managing AI evaluation runs with persistent storage,
 
 The AI Evaluation Reliability Platform provides an API for creating, tracking, and managing evaluation runs.
 
+Version `v0.1.0` is the initial pre-1.0 release. The implemented capabilities in the Features section describe this release.
+
 Each evaluation run follows a controlled lifecycle:
 
 - `pending`: The run has been created but not started.
@@ -15,7 +17,7 @@ Each evaluation run follows a controlled lifecycle:
 
 The platform prevents invalid lifecycle transitions and supports idempotent completion when the same result is submitted more than once.
 
-## Features
+## Features in v0.1.0
 
 - Create and retrieve evaluation runs
 - List all evaluation runs
@@ -286,6 +288,8 @@ docker run --rm --network none ai-evaluation-reliability-tests
 
 The image build fetches the pinned base image and test dependencies. The test
 container runs without network access and uses isolated SQLite test databases.
+For v0.1.0, this Docker test run completed with 40 tests passing and one
+Starlette deprecation warning.
 Update `requirements-test.lock` when the runtime or development dependencies in
 `pyproject.toml` change.
 
