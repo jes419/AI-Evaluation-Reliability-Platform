@@ -1,4 +1,5 @@
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -7,6 +8,41 @@ from sqlalchemy.orm import Session
 
 from app.models import EvaluationRun
 from app.repositories.evaluation_run_repository import EvaluationRunRepository
+
+
+def _json_results_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without Python's bool/int equality overlap."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if left is None or right is None:
+        return left is None and right is None
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        left_finite = not isinstance(left, float) or math.isfinite(left)
+        right_finite = not isinstance(right, float) or math.isfinite(right)
+        return left_finite and right_finite and left == right
+    if isinstance(left, str) or isinstance(right, str):
+        return isinstance(left, str) and isinstance(right, str) and left == right
+    if isinstance(left, list) or isinstance(right, list):
+        return (
+            isinstance(left, list)
+            and isinstance(right, list)
+            and len(left) == len(right)
+            and all(
+                _json_results_equal(a, b)
+                for a, b in zip(left, right)
+            )
+        )
+    if isinstance(left, dict) or isinstance(right, dict):
+        return (
+            isinstance(left, dict)
+            and isinstance(right, dict)
+            and left.keys() == right.keys()
+            and all(
+                _json_results_equal(left[key], right[key])
+                for key in left
+            )
+        )
+    return False
 
 
 class EvaluationRunService:
@@ -54,7 +90,7 @@ class EvaluationRunService:
         evaluation_run = self._get_existing_run(run_id)
 
         if evaluation_run.status == "completed":
-            if evaluation_run.result == result:
+            if _json_results_equal(evaluation_run.result, result):
                 return evaluation_run
 
             raise ValueError(
@@ -75,7 +111,7 @@ class EvaluationRunService:
                 evaluation_run = self._get_existing_run(run_id)
 
                 if evaluation_run.status == "completed":
-                    if evaluation_run.result == result:
+                    if _json_results_equal(evaluation_run.result, result):
                         return evaluation_run
 
                     raise ValueError(

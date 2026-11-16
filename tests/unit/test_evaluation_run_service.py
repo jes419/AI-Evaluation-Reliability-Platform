@@ -1,8 +1,8 @@
 
-import pytest
-
+import json
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import create_engine, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -46,6 +46,7 @@ def arrange_competing_completion(
     winning_completed_at,
 ):
     finalize_if_running = service.repository.finalize_if_running
+    winning_state = {}
 
     def finalize_after_competing_update(run_id, result, completed_at):
         statement = (
@@ -67,6 +68,23 @@ def arrange_competing_completion(
         assert execution_result.rowcount == 1
         db_session.commit()
 
+        db_session.expire_all()
+        winner = service.get_run(run_id)
+        assert winner is not None
+
+        winning_state["snapshot"] = (
+            winner.id,
+            winner.status,
+            json.dumps(
+                winner.result,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            winner.created_at,
+            winner.completed_at,
+            winner.updated_at,
+        )
+
         return finalize_if_running(
             run_id=run_id,
             result=result,
@@ -78,6 +96,8 @@ def arrange_competing_completion(
         "finalize_if_running",
         finalize_after_competing_update,
     )
+
+    return winning_state
 
 
 def test_create_evaluation_run(db_session):
@@ -230,6 +250,7 @@ def test_completion_accepts_equivalent_competing_result(
         "metrics": {"consistency": 0.93, "accuracy": 1.0},
     }
     winning_completed_at = datetime(2025, 1, 2, 3, 4, 5)
+
     arrange_competing_completion(
         service,
         db_session,
@@ -266,6 +287,7 @@ def test_completion_rejects_conflicting_competing_result(
     winning_result = {"score": 0.95, "passed": True}
     requested_result = {"score": 0.98, "passed": True}
     winning_completed_at = datetime(2025, 1, 2, 3, 4, 5)
+
     arrange_competing_completion(
         service,
         db_session,
@@ -396,3 +418,122 @@ def test_failure_preserves_error_after_session_refresh(db_session):
     assert retrieved_run is not None
     assert retrieved_run.status == "failed"
     assert retrieved_run.error_message == error_message
+
+
+JSON_RETRY_CASES = [
+    (
+        {"outer": {"number": 1, "flag": True}, "items": [None, "x"]},
+        {"items": [None, "x"], "outer": {"flag": True, "number": 1.0}},
+        True,
+    ),
+    ({"value": True}, {"value": 1}, False),
+    ({"nested": [{"value": False}]}, {"nested": [{"value": 0}]}, False),
+    ({"items": [1, 2]}, {"items": [2, 1]}, False),
+    ({"items": [1, 2]}, {"items": [1]}, False),
+    ({"value": None}, {"value": None}, True),
+    ({"value": None}, {"value": "null"}, False),
+    ({"value": "exact"}, {"value": "Exact"}, False),
+]
+
+
+@pytest.mark.parametrize(
+    "competing",
+    [False, True],
+    ids=["already-completed", "zero-row-reload"],
+)
+@pytest.mark.parametrize(
+    "winning_result, requested_result, equivalent",
+    JSON_RETRY_CASES,
+    ids=[
+        "nested-key-order-and-number",
+        "true-vs-one",
+        "nested-false-vs-zero",
+        "array-order",
+        "array-length",
+        "null",
+        "null-vs-string",
+        "exact-string",
+    ],
+)
+def test_json_aware_retry_preserves_winning_state(
+    db_session,
+    monkeypatch,
+    competing,
+    winning_result,
+    requested_result,
+    equivalent,
+):
+    service = EvaluationRunService(db_session)
+    run = service.create_run()
+    service.start_run(run.id)
+    created_at = run.created_at
+    winning_completed_at = datetime(2025, 1, 2, 3, 4, 5)
+
+    winning_state = None
+
+    if competing:
+        winning_state = arrange_competing_completion(
+            service,
+            db_session,
+            monkeypatch,
+            winning_result,
+            winning_completed_at,
+        )
+    else:
+        first_completion = service.complete_run(run.id, winning_result)
+        winning_completed_at = first_completion.completed_at
+
+        db_session.expire_all()
+        before = service.get_run(run.id)
+        assert before is not None
+
+        before_state = (
+            before.id,
+            before.status,
+            json.dumps(
+                before.result,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            before.created_at,
+            before.completed_at,
+            before.updated_at,
+        )
+
+    if equivalent:
+        retry = service.complete_run(run.id, requested_result)
+        assert retry.id == run.id
+    else:
+        with pytest.raises(
+            ValueError,
+            match="already completed with a different result",
+        ):
+            service.complete_run(run.id, requested_result)
+
+    if competing:
+        assert winning_state is not None
+        before_state = winning_state["snapshot"]
+
+    db_session.expire_all()
+    after = service.get_run(run.id)
+    assert after is not None
+
+    after_state = (
+        after.id,
+        after.status,
+        json.dumps(
+            after.result,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        after.created_at,
+        after.completed_at,
+        after.updated_at,
+    )
+
+    assert after_state == before_state
+    assert after.id == run.id
+    assert after.status == "completed"
+    assert after.created_at == created_at
+    assert after.completed_at == winning_completed_at
+    assert after.updated_at == winning_completed_at
