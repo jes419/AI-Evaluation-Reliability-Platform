@@ -328,4 +328,4 @@ The persistence tests verify competing finalization attempts using separate data
 
 ## License
 
-No license has been specified yet.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file in the repository root.
